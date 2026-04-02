@@ -21,7 +21,7 @@ function parseArgs() {
   const opts = { cmd: null, rarity: 'legendary', shiny: false, species: null, lang: null, dryRun: false, restore: false, cursed: false };
 
   // Subcommands
-  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status', 'dashboard', 'checkin', 'setup-hook', 'evolve', 'banter', 'show'].includes(args[0])) {
+  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status', 'dashboard', 'checkin', 'setup-hook', 'evolve', 'banter', 'show', 'daily'].includes(args[0])) {
     opts.cmd = args[0];
     opts.alias = args[1] ?? null;
     opts.aliasB = args[2] ?? null;
@@ -532,6 +532,40 @@ async function runStableCmd(opts) {
     console.log('✓ 已安装 Stop hook');
     console.log(`  每次 Claude Code 会话结束后自动运行 checkin`);
     console.log(`  命令：${hookCmd}`);
+    return;
+  }
+
+  if (opts.cmd === 'daily') {
+    const stable = stableList();
+    const entries = Object.entries(stable);
+    if (entries.length === 0) { console.log('马厩是空的。'); return; }
+
+    console.log(`\n一键日常互动（${entries.length} 只伴侣）\n${'─'.repeat(40)}`);
+    for (const [alias, entry] of entries) {
+      const name = entry.companion?.name ?? alias;
+      const basePersonality = entry.companion?.personality ?? '';
+      const hatchedAt = entry.hatchedAt ?? entry.companion?.hatchedAt;
+      let totalGained = 0;
+      const msgs = [];
+
+      for (const action of ['feed', 'pet', 'play']) {
+        const res = interact(alias, action, basePersonality, hatchedAt);
+        if (res.ok) {
+          totalGained += (res.affection - (totalGained > 0 ? res.affection - totalGained : 0));
+          msgs.push(action === 'feed' ? '喂食✓' : action === 'pet' ? '摸头✓' : '玩耍✓');
+        } else {
+          msgs.push(action === 'feed' ? '喂食-' : action === 'pet' ? '摸头-' : '玩耍-');
+        }
+      }
+
+      // Re-fetch affection after all actions
+      const bondState = getBondState(alias);
+      const affection = bondState?.affection ?? 0;
+      const { level, title } = getLevel(affection);
+      console.log(`  ${name.padEnd(12)} ${msgs.join(' ')}  好感${affection} ${BOND_STARS[level]}Lv${level}「${title}」`);
+      applyBondToConfig(alias, affection, basePersonality);
+    }
+    console.log(`\n完成！`);
     return;
   }
 
