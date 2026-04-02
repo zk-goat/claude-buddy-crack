@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { Worker } from 'node:worker_threads';
 import { cpus } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { deriveCompanion, deriveCompanionFull, SPECIES } from './lib/algorithm.js';
@@ -19,7 +21,7 @@ function parseArgs() {
   const opts = { cmd: null, rarity: 'legendary', shiny: false, species: null, lang: null, dryRun: false, restore: false };
 
   // Subcommands
-  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status', 'dashboard'].includes(args[0])) {
+  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status', 'dashboard', 'checkin', 'setup-hook'].includes(args[0])) {
     opts.cmd = args[0];
     opts.alias = args[1] ?? null;
     return opts;
@@ -419,6 +421,61 @@ async function runStableCmd(opts) {
     }
 
     console.log(`\n${line}\n`);
+    return;
+  }
+
+  if (opts.cmd === 'checkin') {
+    // Auto-detect active companion from ~/.claude.json
+    const configPath = findConfigPath();
+    if (!configPath) { process.exit(0); }
+    const config = readConfig(configPath);
+    const activeUid = config.oauthAccount?.accountUuid ?? config.userID;
+    if (!activeUid) { process.exit(0); }
+
+    const stable = stableList();
+    const alias = Object.entries(stable).find(([, e]) => e.uid === activeUid)?.[0];
+    if (!alias) { process.exit(0); } // active companion not in stable, skip silently
+
+    const entry = stable[alias];
+    const basePersonality = entry.companion?.personality ?? '';
+    const res = interact(alias, 'checkin', basePersonality);
+    if (!res.ok) { console.log(`[${entry.companion?.name ?? alias}] ${res.message}`); process.exit(0); }
+
+    const { level, title } = res.level;
+    console.log(`[${entry.companion?.name ?? alias}] ${res.message}  ${BOND_STARS[level]}Lv${level}「${title}」`);
+    if (res.leveledUp) console.log(`🎉 升级！达到 Lv${level}「${title}」`);
+    applyBondToConfig(alias, res.affection, res.basePersonality);
+    return;
+  }
+
+  if (opts.cmd === 'setup-hook') {
+    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    const hookCmd = `node "${join(__dirname, 'index.js')}" checkin`;
+
+    let settings = {};
+    if (existsSync(settingsPath)) {
+      try { settings = JSON.parse(readFileSync(settingsPath, 'utf8')); } catch {}
+    }
+
+    const hooks = settings.hooks ?? {};
+    const stopHooks = hooks.Stop ?? [];
+
+    // Check if already installed
+    const already = stopHooks.some(h =>
+      (typeof h === 'string' && h.includes('checkin')) ||
+      (h?.command && h.command.includes('checkin'))
+    );
+    if (already) {
+      console.log('Hook 已安装，无需重复设置。');
+      return;
+    }
+
+    stopHooks.push({ command: hookCmd, timeout: 5000 });
+    settings.hooks = { ...hooks, Stop: stopHooks };
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    console.log('✓ 已安装 Stop hook');
+    console.log(`  每次 Claude Code 会话结束后自动运行 checkin`);
+    console.log(`  命令：${hookCmd}`);
     return;
   }
 }
