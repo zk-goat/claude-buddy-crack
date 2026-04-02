@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { crack, deriveCompanion } from './lib/algorithm.js';
-import { findConfigPath, backupConfig, writeConfig, restoreBackup } from './lib/config.js';
+import { findConfigPath, readConfig, hasAccountUuid, backupConfig, writeConfig, restoreBackup } from './lib/config.js';
 import { createInterface } from 'node:readline';
 
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
@@ -75,12 +75,18 @@ async function main() {
     return;
   }
 
+  // Detect whether oauthAccount.accountUuid is the active seed (takes priority over userID)
+  const config = configPath ? readConfig(configPath) : null;
+  const useUuid = config ? hasAccountUuid(config) : false;
+  if (useUuid) console.log('Detected oauthAccount — will update accountUuid.');
+
   const targetLabel = (opts.shiny ? 'shiny ' : '') + opts.rarity;
   console.log(`Searching for ${targetLabel} companion...`);
 
   const result = crack({
     rarity: opts.rarity,
     shiny: opts.shiny,
+    useUuid,
     onProgress: (n) => process.stdout.write(`\rSearching... (${n.toLocaleString()} attempts)`),
   });
 
