@@ -8,7 +8,7 @@ import { deriveCompanion, deriveCompanionFull, SPECIES } from './lib/algorithm.j
 import { findConfigPath, readConfig, hasAccountUuid, backupConfig, writeConfig, writeConfigWithCompanion, restoreBackup } from './lib/config.js';
 import { buildChineseName, buildChinesePersonality, SPECIES_ZH, RARITY_ZH } from './lib/locale.js';
 import { stableSave, stableList, stableGet, stableRemove, STABLE_PATH } from './lib/stable.js';
-import { interact, getStatus, getLevel, getBondState, buildPersonality, getCompanionTitle, BOND_STARS, LEVELS } from './lib/bond.js';
+import { interact, getStatus, getLevel, getBondState, buildPersonality, buildFullPersonality, getCompanionTitle, getRelationships, getRelationTitle, getAllRelationships, BOND_STARS, LEVELS } from './lib/bond.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
@@ -19,7 +19,7 @@ function parseArgs() {
   const opts = { cmd: null, rarity: 'legendary', shiny: false, species: null, lang: null, dryRun: false, restore: false };
 
   // Subcommands
-  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status'].includes(args[0])) {
+  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status', 'dashboard'].includes(args[0])) {
     opts.cmd = args[0];
     opts.alias = args[1] ?? null;
     return opts;
@@ -182,7 +182,20 @@ function applyBondToConfig(alias, affection, basePersonality) {
   if (!entry) return;
   const activeUid = config.oauthAccount?.accountUuid ?? config.userID;
   if (activeUid !== entry.uid) return;
-  const newPersonality = buildPersonality(basePersonality, affection);
+
+  // Build relationships for personality
+  const stable = stableList();
+  const companionNames = Object.fromEntries(
+    Object.entries(stable).map(([a, e]) => [a, e.companion?.name ?? a])
+  );
+  const rels = getRelationships(alias, companionNames).map(r => {
+    const otherEntry = stable[r.other];
+    const statA = topStatOf(entry.companion);
+    const statB = topStatOf(otherEntry?.companion);
+    return { ...r, title: getRelationTitle(statA, statB, r.days) };
+  });
+
+  const newPersonality = buildFullPersonality(basePersonality, affection, rels);
   const { level } = getLevel(affection);
   const newName = level >= 7
     ? getCompanionTitle(entry.companion?.name ?? alias, affection)
@@ -192,6 +205,12 @@ function applyBondToConfig(alias, affection, basePersonality) {
     personality: newPersonality,
     name: newName,
   });
+}
+
+function topStatOf(companion) {
+  const stats = companion?.stats;
+  if (!stats) return 'SNARK';
+  return Object.entries(stats).reduce((a, b) => b[1] > a[1] ? b : a)[0];
 }
 
 async function pickAlias() {
@@ -348,6 +367,58 @@ async function runStableCmd(opts) {
     const playLeft = state.playDate === new Date().toDateString() ? 1 - (state.playCount ?? 0) : 1;
     console.log(`玩耍：今日剩余 ${playLeft}/1 次`);
     console.log('');
+    return;
+  }
+
+  if (opts.cmd === 'dashboard') {
+    const stable = stableList();
+    const entries = Object.entries(stable);
+    if (entries.length === 0) { console.log('马厩是空的。'); return; }
+
+    const W = 54;
+    const line = '═'.repeat(W);
+    const thin = '─'.repeat(W);
+    console.log(`\n${line}`);
+    console.log(' 伴侣看板');
+    console.log(line);
+
+    for (const [alias, entry] of entries) {
+      const c = entry.companion;
+      const name = (c?.name ?? alias).padEnd(10);
+      const shiny = c?.shiny ? '✦' : ' ';
+      const rarity = (RARITY_ZH[c?.rarity] ?? '?')[0];
+      const species = (SPECIES_ZH[c?.species] ?? c?.species ?? '?').slice(0, 4).padEnd(4);
+      const bond = getBondState(alias);
+      const lvlStr = bond ? `${BOND_STARS[getLevel(bond.affection).level]}Lv${getLevel(bond.affection).level}` : ' — ';
+      const energy = bond ? bond.energy : 100;
+      const energyBar = '█'.repeat(Math.round(energy / 10)).padEnd(10, '░');
+
+      const feedElapsed = bond ? Date.now() - (bond.lastFed ?? 0) : Infinity;
+      const feedReady = feedElapsed >= 8 * 3600000;
+      const feedStr = feedReady ? '⚠ 可喂食' : `✓ ${Math.ceil((8 * 3600000 - feedElapsed) / 3600000)}h后`;
+
+      console.log(`  ${shiny}${rarity}${species} ${name} ${lvlStr.padEnd(8)} [${energyBar}]${energy.toString().padStart(3)}  ${feedStr}`);
+    }
+
+    // Relationships
+    const allRels = getAllRelationships();
+    const relEntries = Object.entries(allRels).filter(([, v]) => v.days > 0);
+    if (relEntries.length > 0) {
+      console.log(`\n${thin}`);
+      console.log(' 同伴羁绊');
+      console.log(thin);
+      for (const [key, pair] of relEntries) {
+        const [a, b] = key.split('|');
+        const nameA = stable[a]?.companion?.name ?? a;
+        const nameB = stable[b]?.companion?.name ?? b;
+        const statA = topStatOf(stable[a]?.companion);
+        const statB = topStatOf(stable[b]?.companion);
+        const title = getRelationTitle(statA, statB, pair.days);
+        console.log(`  ${nameA} × ${nameB}  「${title}」  同行 ${pair.days} 天`);
+      }
+    }
+
+    console.log(`\n${line}\n`);
     return;
   }
 }
