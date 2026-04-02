@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 import { deriveCompanion, deriveCompanionFull, SPECIES } from './lib/algorithm.js';
 import { findConfigPath, readConfig, hasAccountUuid, backupConfig, writeConfig, writeConfigWithCompanion, restoreBackup } from './lib/config.js';
 import { buildChineseName, buildChinesePersonality, SPECIES_ZH, RARITY_ZH } from './lib/locale.js';
+import { stableSave, stableList, stableGet, stableRemove, STABLE_PATH } from './lib/stable.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
@@ -14,7 +15,15 @@ const RARITY_WEIGHTS = { common: 60, uncommon: 25, rare: 10, epic: 4, legendary:
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const opts = { rarity: 'legendary', shiny: false, species: null, lang: null, dryRun: false, restore: false };
+  const opts = { cmd: null, rarity: 'legendary', shiny: false, species: null, lang: null, dryRun: false, restore: false };
+
+  // Subcommands: save <alias>, list, switch <alias>, remove <alias>
+  if (['save', 'list', 'switch', 'remove'].includes(args[0])) {
+    opts.cmd = args[0];
+    opts.alias = args[1] ?? null;
+    return opts;
+  }
+
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--rarity' && args[i + 1]) opts.rarity = args[++i];
     else if (args[i] === '--species' && args[i + 1]) opts.species = args[++i];
@@ -44,7 +53,11 @@ function printHelp() {
 claude-buddy-crack -- crack the Claude Code companion algorithm
 
 Usage:
-  npx claude-buddy-crack [options]
+  npx claude-buddy-crack [options]          搜索并注入新伴侣
+  npx claude-buddy-crack save <别名>        保存当前伴侣到马厩
+  npx claude-buddy-crack list               列出马厩里所有伴侣
+  npx claude-buddy-crack switch <别名>      切换到马厩中的伴侣
+  npx claude-buddy-crack remove <别名>      从马厩删除某只伴侣
 
 Options:
   --rarity <rarity>   Target rarity (default: legendary)
@@ -143,8 +156,76 @@ async function confirm(question) {
   });
 }
 
+function formatCompanion(entry, alias) {
+  const c = entry.companion;
+  const date = new Date(entry.savedAt).toLocaleDateString('zh-CN');
+  const shiny = c.shiny ? ' ✦' : '';
+  const name = c.name ?? '?';
+  const species = SPECIES_ZH[c.species] ?? c.species ?? '?';
+  const rarity = RARITY_ZH[c.rarity] ?? c.rarity ?? '?';
+  return `  ${alias.padEnd(16)} ${name}${shiny}  ${rarity}${species}  (${date})`;
+}
+
+async function runStableCmd(opts) {
+  const configPath = findConfigPath();
+
+  if (opts.cmd === 'list') {
+    const stable = stableList();
+    const entries = Object.entries(stable);
+    if (entries.length === 0) {
+      console.log(`马厩是空的。用 save <别名> 存入伴侣。`);
+      return;
+    }
+    console.log(`马厩 (${STABLE_PATH})：\n`);
+    for (const [alias, entry] of entries) {
+      console.log(formatCompanion(entry, alias));
+    }
+    return;
+  }
+
+  if (opts.cmd === 'save') {
+    if (!opts.alias) { console.error('用法：save <别名>'); process.exit(1); }
+    if (!configPath) { console.error('找不到 ~/.claude.json'); process.exit(1); }
+    const config = readConfig(configPath);
+    const companion = config.companion;
+    if (!companion) { console.error('当前没有伴侣，先运行 /buddy 孵化。'); process.exit(1); }
+    const uid = config.oauthAccount?.accountUuid ?? config.userID;
+    if (!uid) { console.error('找不到 userID/accountUuid。'); process.exit(1); }
+    stableSave(opts.alias, uid, companion);
+    const name = companion.name ?? '未知';
+    console.log(`已保存「${name}」为 "${opts.alias}"`);
+    return;
+  }
+
+  if (opts.cmd === 'switch') {
+    if (!opts.alias) { console.error('用法：switch <别名>'); process.exit(1); }
+    if (!configPath) { console.error('找不到 ~/.claude.json'); process.exit(1); }
+    const entry = stableGet(opts.alias);
+    if (!entry) { console.error(`马厩里没有 "${opts.alias}"，用 list 查看可用伴侣。`); process.exit(1); }
+    backupConfig(configPath);
+    writeConfigWithCompanion(configPath, entry.uid, entry.companion);
+    const name = entry.companion?.name ?? opts.alias;
+    console.log(`已切换到「${name}」`);
+    console.log(`备份保存至 ${configPath}.buddy-backup`);
+    return;
+  }
+
+  if (opts.cmd === 'remove') {
+    if (!opts.alias) { console.error('用法：remove <别名>'); process.exit(1); }
+    const ok = stableRemove(opts.alias);
+    if (!ok) { console.error(`马厩里没有 "${opts.alias}"`); process.exit(1); }
+    console.log(`已删除 "${opts.alias}"`);
+    return;
+  }
+}
+
 async function main() {
   const opts = parseArgs();
+
+  if (opts.cmd) {
+    await runStableCmd(opts);
+    return;
+  }
 
   const configPath = findConfigPath();
   if (!configPath && !opts.dryRun) {
