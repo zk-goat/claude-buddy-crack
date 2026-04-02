@@ -194,6 +194,18 @@ function applyBondToConfig(alias, affection, basePersonality) {
   });
 }
 
+async function pickAlias() {
+  const stable = stableList();
+  const entries = Object.entries(stable);
+  if (entries.length === 0) { console.log('马厩是空的。'); return null; }
+  console.log('选择伴侣：\n');
+  entries.forEach(([a, e], i) => console.log(`  ${i + 1}. ${formatCompanion(e, a)}`));
+  const answer = await prompt('\n输入序号或别名：');
+  const num = parseInt(answer);
+  if (!isNaN(num) && num >= 1 && num <= entries.length) return entries[num - 1][0];
+  return answer.trim() || null;
+}
+
 async function runStableCmd(opts) {
   const configPath = findConfigPath();
 
@@ -263,7 +275,8 @@ async function runStableCmd(opts) {
   }
 
   if (['feed', 'pet', 'play'].includes(opts.cmd)) {
-    if (!opts.alias) { console.error(`用法：${opts.cmd} <别名>`); process.exit(1); }
+    if (!opts.alias) opts.alias = await pickAlias();
+    if (!opts.alias) process.exit(0);
     const entry = stableGet(opts.alias);
     if (!entry) { console.error(`马厩里没有 "${opts.alias}"，用 list 查看。`); process.exit(1); }
     const basePersonality = entry.companion?.personality ?? '';
@@ -292,7 +305,8 @@ async function runStableCmd(opts) {
   }
 
   if (opts.cmd === 'status') {
-    if (!opts.alias) { console.error('用法：status <别名>'); process.exit(1); }
+    if (!opts.alias) opts.alias = await pickAlias();
+    if (!opts.alias) process.exit(0);
     const entry = stableGet(opts.alias);
     if (!entry) { console.error(`马厩里没有 "${opts.alias}"，用 list 查看。`); process.exit(1); }
     const state = getStatus(opts.alias);
