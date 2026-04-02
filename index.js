@@ -146,14 +146,15 @@ async function crackMultiThreaded({ rarity, shiny, species, useUuid, expectedAtt
   });
 }
 
-async function confirm(question) {
+async function prompt(question) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
+    rl.question(question, (answer) => { rl.close(); resolve(answer.trim()); });
   });
+}
+
+async function confirm(question) {
+  return (await prompt(question)).toLowerCase() === 'y';
 }
 
 function formatCompanion(entry, alias) {
@@ -198,13 +199,29 @@ async function runStableCmd(opts) {
   }
 
   if (opts.cmd === 'switch') {
-    if (!opts.alias) { console.error('用法：switch <别名>'); process.exit(1); }
     if (!configPath) { console.error('找不到 ~/.claude.json'); process.exit(1); }
-    const entry = stableGet(opts.alias);
-    if (!entry) { console.error(`马厩里没有 "${opts.alias}"，用 list 查看可用伴侣。`); process.exit(1); }
+    const stable = stableList();
+    const entries = Object.entries(stable);
+    if (entries.length === 0) { console.log('马厩是空的。用 save <别名> 存入伴侣。'); process.exit(0); }
+
+    let alias = opts.alias;
+    if (!alias) {
+      console.log('马厩里的伴侣：\n');
+      entries.forEach(([a, e], i) => console.log(`  ${i + 1}. ${formatCompanion(e, a)}`));
+      const answer = await prompt('\n输入序号或别名：');
+      const num = parseInt(answer);
+      if (!isNaN(num) && num >= 1 && num <= entries.length) {
+        alias = entries[num - 1][0];
+      } else {
+        alias = answer.trim();
+      }
+    }
+
+    const entry = stableGet(alias);
+    if (!entry) { console.error(`马厩里没有 "${alias}"`); process.exit(1); }
     backupConfig(configPath);
     writeConfigWithCompanion(configPath, entry.uid, entry.companion);
-    const name = entry.companion?.name ?? opts.alias;
+    const name = entry.companion?.name ?? alias;
     console.log(`已切换到「${name}」`);
     console.log(`备份保存至 ${configPath}.buddy-backup`);
     return;
