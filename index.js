@@ -8,6 +8,7 @@ import { deriveCompanion, deriveCompanionFull, SPECIES } from './lib/algorithm.j
 import { findConfigPath, readConfig, hasAccountUuid, backupConfig, writeConfig, writeConfigWithCompanion, restoreBackup } from './lib/config.js';
 import { buildChineseName, buildChinesePersonality, SPECIES_ZH, RARITY_ZH } from './lib/locale.js';
 import { stableSave, stableList, stableGet, stableRemove, STABLE_PATH } from './lib/stable.js';
+import { interact, getStatus, getLevel, getBondState, buildPersonality, getCompanionTitle, BOND_STARS, LEVELS } from './lib/bond.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RARITIES = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
@@ -17,8 +18,8 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const opts = { cmd: null, rarity: 'legendary', shiny: false, species: null, lang: null, dryRun: false, restore: false };
 
-  // Subcommands: save <alias>, list, switch <alias>, remove <alias>
-  if (['save', 'list', 'switch', 'remove'].includes(args[0])) {
+  // Subcommands
+  if (['save', 'list', 'switch', 'remove', 'feed', 'pet', 'play', 'status'].includes(args[0])) {
     opts.cmd = args[0];
     opts.alias = args[1] ?? null;
     return opts;
@@ -58,6 +59,10 @@ Usage:
   npx claude-buddy-crack list               列出马厩里所有伴侣
   npx claude-buddy-crack switch <别名>      切换到马厩中的伴侣
   npx claude-buddy-crack remove <别名>      从马厩删除某只伴侣
+  npx claude-buddy-crack feed <别名>        喂食（+10 好感度，8小时冷却）
+  npx claude-buddy-crack pet <别名>         摸头（+6 好感度，每天3次）
+  npx claude-buddy-crack play <别名>        玩耍（+15 好感度，每天1次，消耗体力）
+  npx claude-buddy-crack status <别名>      查看伴侣好感度和等级状态
 
 Options:
   --rarity <rarity>   Target rarity (default: legendary)
@@ -164,7 +169,29 @@ function formatCompanion(entry, alias) {
   const name = c.name ?? '?';
   const species = SPECIES_ZH[c.species] ?? c.species ?? '?';
   const rarity = RARITY_ZH[c.rarity] ?? c.rarity ?? '?';
-  return `  ${alias.padEnd(16)} ${name}${shiny}  ${rarity}${species}  (${date})`;
+  const bond = getBondState(alias);
+  const bondStr = bond ? ` ${BOND_STARS[getLevel(bond.affection).level]} Lv${getLevel(bond.affection).level}` : '';
+  return `  ${alias.padEnd(16)} ${name}${shiny}  ${rarity}${species}${bondStr}  (${date})`;
+}
+
+function applyBondToConfig(alias, affection, basePersonality) {
+  const configPath = findConfigPath();
+  if (!configPath) return;
+  const config = readConfig(configPath);
+  const entry = stableGet(alias);
+  if (!entry) return;
+  const activeUid = config.oauthAccount?.accountUuid ?? config.userID;
+  if (activeUid !== entry.uid) return;
+  const newPersonality = buildPersonality(basePersonality, affection);
+  const { level } = getLevel(affection);
+  const newName = level >= 7
+    ? getCompanionTitle(entry.companion?.name ?? alias, affection)
+    : (config.companion?.name ?? entry.companion?.name);
+  writeConfigWithCompanion(configPath, entry.uid, {
+    ...config.companion,
+    personality: newPersonality,
+    name: newName,
+  });
 }
 
 async function runStableCmd(opts) {
@@ -232,6 +259,81 @@ async function runStableCmd(opts) {
     const ok = stableRemove(opts.alias);
     if (!ok) { console.error(`马厩里没有 "${opts.alias}"`); process.exit(1); }
     console.log(`已删除 "${opts.alias}"`);
+    return;
+  }
+
+  if (['feed', 'pet', 'play'].includes(opts.cmd)) {
+    if (!opts.alias) { console.error(`用法：${opts.cmd} <别名>`); process.exit(1); }
+    const entry = stableGet(opts.alias);
+    if (!entry) { console.error(`马厩里没有 "${opts.alias}"，用 list 查看。`); process.exit(1); }
+    const basePersonality = entry.companion?.personality ?? '';
+    const res = interact(opts.alias, opts.cmd, basePersonality);
+    if (!res.ok) { console.log(res.message); process.exit(0); }
+
+    const { level, title } = res.level;
+    const stars = BOND_STARS[level];
+    console.log(res.message);
+    console.log(`好感度：${res.affection}  ${stars} Lv${level}「${title}」`);
+
+    if (res.leveledUp) {
+      console.log(`\n🎉 好感度提升！达到 Lv${level}「${title}」`);
+      if (level === 5) console.log('   解锁：伴侣开始结合专长给出建议');
+      if (level === 7) console.log('   解锁：伴侣名字将显示称号');
+      if (level === 10) console.log('   解锁：可触发进化（换物种保留羁绊）');
+    }
+
+    if (res.nextLevel) {
+      const needed = res.nextLevel.threshold - res.affection;
+      console.log(`距离下一级「${res.nextLevel.title}」还需 ${needed} 好感度`);
+    }
+
+    applyBondToConfig(opts.alias, res.affection, res.basePersonality);
+    return;
+  }
+
+  if (opts.cmd === 'status') {
+    if (!opts.alias) { console.error('用法：status <别名>'); process.exit(1); }
+    const entry = stableGet(opts.alias);
+    if (!entry) { console.error(`马厩里没有 "${opts.alias}"，用 list 查看。`); process.exit(1); }
+    const state = getStatus(opts.alias);
+    const c = entry.companion;
+    const name = c?.name ?? opts.alias;
+    const species = SPECIES_ZH[c?.species] ?? c?.species ?? '?';
+    const rarity = RARITY_ZH[c?.rarity] ?? c?.rarity ?? '?';
+
+    console.log(`\n${name}  ${c?.shiny ? '✦ ' : ''}${rarity}${species}`);
+    console.log('─'.repeat(36));
+
+    if (!state) {
+      console.log('还没有互动记录。用 feed/pet/play 开始养成！');
+      return;
+    }
+
+    const { level, title } = state.levelInfo;
+    const stars = BOND_STARS[level];
+    const bar = (v, max = 100) => '█'.repeat(Math.round(v / max * 20)).padEnd(20, '░');
+
+    console.log(`等级：${stars} Lv${level}「${title}」`);
+    console.log(`好感度：${state.affection}`);
+
+    if (state.nextLevel) {
+      const pct = Math.round((state.affection - LEVELS[level - 1].threshold) /
+        (state.nextLevel.threshold - LEVELS[level - 1].threshold) * 100);
+      console.log(`进度：[${bar(pct)}] ${pct}% → Lv${state.nextLevel.level}「${state.nextLevel.title}」`);
+    } else {
+      console.log('进度：[████████████████████] MAX');
+    }
+
+    console.log(`体力：[${bar(state.energy)}] ${state.energy}/${100}`);
+
+    const feedWait = Date.now() - (state.lastFed ?? 0);
+    const feedReady = feedWait >= 8 * 3600000;
+    console.log(`喂食：${feedReady ? '✓ 可喂食' : `冷却中（${Math.ceil((8 * 3600000 - feedWait) / 3600000)}h 后）`}`);
+    const petLeft = 3 - (state.petDate === new Date().toDateString() ? (state.petCount ?? 0) : 0);
+    console.log(`摸头：今日剩余 ${petLeft}/3 次`);
+    const playLeft = state.playDate === new Date().toDateString() ? 1 - (state.playCount ?? 0) : 1;
+    console.log(`玩耍：今日剩余 ${playLeft}/1 次`);
+    console.log('');
     return;
   }
 }
